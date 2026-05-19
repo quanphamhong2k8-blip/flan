@@ -1,0 +1,181 @@
+<canvas id="c" style="width:100%;display:block;cursor:grab;touch-action:none;border-radius:12px;"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas = document.getElementById('c');
+const W = canvas.parentElement.offsetWidth || 680;
+const H = Math.min(W * 0.8, 540);
+canvas.width = W; canvas.height = H;
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x1a2a35, 1);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a2a35);
+const camera = new THREE.PerspectiveCamera(42, W/H, 0.1, 100);
+camera.position.set(0, 7.5, 1.0);
+camera.lookAt(0, 0, 0);
+
+const ambient = new THREE.AmbientLight(0xfff5e8, 0.4);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xfff8f0, 0.6);
+dirLight.position.set(4, 10, 5);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
+dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 30;
+dirLight.shadow.camera.left = -8; dirLight.shadow.camera.right = 8;
+dirLight.shadow.camera.top = 8; dirLight.shadow.camera.bottom = -8;
+scene.add(dirLight);
+const fillLight = new THREE.DirectionalLight(0xffe0c8, 0.25);
+fillLight.position.set(-5, 5, -3); scene.add(fillLight);
+const topLight = new THREE.PointLight(0xffffff, 0.3, 30);
+topLight.position.set(0, 9, 0); scene.add(topLight);
+
+const plate = new THREE.Mesh(new THREE.CylinderGeometry(7,7,0.08,64), new THREE.MeshLambertMaterial({color:0x223040}));
+plate.position.y=-0.05; plate.receiveShadow=true; scene.add(plate);
+
+function makeFlanMat(){return new THREE.MeshPhysicalMaterial({color:new THREE.Color(0xf5e4cc),roughness:0.55,metalness:0.0,clearcoat:0.2,clearcoatRoughness:0.35,reflectivity:0.15});}
+const radius=1.7,seg=64;
+function makeSphereGeo(){return new THREE.SphereGeometry(radius,seg,seg);}
+function clonePos(geo){return new Float32Array(geo.attributes.position.array);}
+function makePinkOverlay(){const g=new THREE.SphereGeometry(radius*1.002,32,32);return new THREE.Mesh(g,new THREE.MeshPhysicalMaterial({color:0xffb8a0,transparent:true,opacity:0.07,roughness:0.4,side:THREE.FrontSide}));}
+function makeHighlight(){const g=new THREE.SphereGeometry(radius*0.1,16,16);const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xfff8f0,transparent:true,opacity:0.35}));m.position.set(-radius*0.2,radius*0.65,radius*0.2);return m;}
+const TOPPER_RADIUS=0.18;
+function makeTopper(){const g=new THREE.SphereGeometry(TOPPER_RADIUS,32,32);const m=new THREE.Mesh(g,new THREE.MeshPhysicalMaterial({color:0xff8fab,roughness:0.3,metalness:0.0,clearcoat:0.6,clearcoatRoughness:0.1}));m.castShadow=true;m.position.set(0,radius-TOPPER_RADIUS*0.5,0);return m;}
+
+const BASE_X=radius*1.02, MAX_DRIFT=radius*0.55;
+
+const group1=new THREE.Group(), geo1=makeSphereGeo(), flan1=new THREE.Mesh(geo1,makeFlanMat());
+flan1.castShadow=true;flan1.receiveShadow=true;group1.add(flan1);flan1.add(makePinkOverlay());flan1.add(makeHighlight());group1.add(makeTopper());group1.position.set(-BASE_X,0,0);scene.add(group1);
+const orig1=clonePos(geo1);
+
+const group2=new THREE.Group(), geo2=makeSphereGeo(), flan2=new THREE.Mesh(geo2,makeFlanMat());
+flan2.castShadow=true;flan2.receiveShadow=true;group2.add(flan2);flan2.add(makePinkOverlay());flan2.add(makeHighlight());group2.add(makeTopper());group2.position.set(BASE_X,0,0);scene.add(group2);
+const orig2=clonePos(geo2);
+
+const groups=[group1,group2],geos=[geo1,geo2],origs=[orig1,orig2];
+const basePos=[new THREE.Vector3(-BASE_X,0,0),new THREE.Vector3(BASE_X,0,0)];
+
+const state=[
+  {wobble:0,wobbleDecay:0,wDir:new THREE.Vector2(1,0),scaleX:1,scaleY:1,scaleZ:1,scaleVelX:0,scaleVelY:0,scaleVelZ:0,stretchDir:new THREE.Vector2(0,0),stretchAmt:0,stretchVel:0,vel:new THREE.Vector3(),pos:new THREE.Vector3(-BASE_X,0,0)},
+  {wobble:0,wobbleDecay:0,wDir:new THREE.Vector2(1,0),scaleX:1,scaleY:1,scaleZ:1,scaleVelX:0,scaleVelY:0,scaleVelZ:0,stretchDir:new THREE.Vector2(0,0),stretchAmt:0,stretchVel:0,vel:new THREE.Vector3(),pos:new THREE.Vector3(BASE_X,0,0)}
+];
+
+const raycaster=new THREE.Raycaster();
+let dragFlan=-1,pressTimer=null,pressedIdx=-1,lastDragPt=null;
+const dragPlane=new THREE.Plane(),dragPt=new THREE.Vector3();
+
+function getMouseNDC(cx,cy){const r=canvas.getBoundingClientRect();return new THREE.Vector2(((cx-r.left)/W)*2-1,-((cy-r.top)/H)*2+1);}
+function getHoveredFlan(cx,cy){const m=getMouseNDC(cx,cy);raycaster.setFromCamera(m,camera);const hits=raycaster.intersectObjects([flan1,flan2,...group1.children,...group2.children],true);if(!hits.length)return -1;if(group1.getObjectById(hits[0].object.id))return 0;if(group2.getObjectById(hits[0].object.id))return 1;return -1;}
+function getPlanePoint(cx,cy,py){const m=getMouseNDC(cx,cy);raycaster.setFromCamera(m,camera);dragPlane.set(new THREE.Vector3(0,1,0),-py);raycaster.ray.intersectPlane(dragPlane,dragPt);return dragPt.clone();}
+
+function pokeFlan(idx,strength){const s=state[idx];s.wobble=Math.min(s.wobble+strength,1.0);s.wobbleDecay=0;s.wDir.set(Math.random()*2-1,Math.random()*2-1).normalize();s.scaleVelX+=-0.08*strength;s.scaleVelY+=0.14*strength;s.scaleVelZ+=-0.08*strength;}
+
+function onDown(cx,cy){const hf=getHoveredFlan(cx,cy);if(hf>=0){dragFlan=hf;pressedIdx=hf;lastDragPt=getPlanePoint(cx,cy,0);pokeFlan(hf,0.35);pressTimer=setTimeout(()=>{if(pressedIdx===hf)pokeFlan(hf,0.6);},300);canvas.style.cursor='grabbing';}}
+
+function onMove(cx,cy){
+  if(dragFlan>=0){
+    const pt=getPlanePoint(cx,cy,0);
+    if(pt&&lastDragPt){
+      const s=state[dragFlan];
+      const dx=pt.x-lastDragPt.x,dz=pt.z-lastDragPt.z,spd=Math.sqrt(dx*dx+dz*dz);
+      const offX=s.pos.x-basePos[dragFlan].x,offZ=s.pos.z-basePos[dragFlan].z;
+      const offDist=Math.sqrt(offX*offX+offZ*offZ);
+      const resistFactor=1.0-Math.min(offDist/MAX_DRIFT,1.0)*0.65;
+      s.vel.x+=dx*3.5*resistFactor; s.vel.z+=dz*3.5*resistFactor;
+      if(spd>0.001){s.stretchDir.set(dx/spd,dz/spd);s.stretchVel+=spd*18.0;s.stretchAmt=Math.min(s.stretchAmt+spd*12,0.32);}
+      pokeFlan(dragFlan,0.06); lastDragPt=pt;
+    }
+    return;
+  }
+  const hf=getHoveredFlan(cx,cy);canvas.style.cursor=hf>=0?'pointer':'default';
+}
+
+function onUp(){
+  clearTimeout(pressTimer);
+  if(dragFlan>=0){
+    const s=state[dragFlan];
+    const offX=s.pos.x-basePos[dragFlan].x,offZ=s.pos.z-basePos[dragFlan].z;
+    const offDist=Math.sqrt(offX*offX+offZ*offZ);
+    if(offDist>0.05){
+      // === GIẢM: bounce nhẹ thôi, từ 2.2 → 0.8 ===
+      s.vel.x+=(-offX/offDist)*offDist*0.8;
+      s.vel.z+=(-offZ/offDist)*offDist*0.8;
+      pokeFlan(dragFlan,0.25); // nhẹ hơn từ 0.5
+    }
+  }
+  dragFlan=-1;pressedIdx=-1;lastDragPt=null;canvas.style.cursor='default';
+}
+
+canvas.addEventListener('mousemove',e=>onMove(e.clientX,e.clientY));
+canvas.addEventListener('mousedown',e=>onDown(e.clientX,e.clientY));
+canvas.addEventListener('mouseup',onUp);
+canvas.addEventListener('mouseleave',onUp);
+canvas.addEventListener('dblclick',e=>{const h=getHoveredFlan(e.clientX,e.clientY);if(h>=0)pokeFlan(h,0.8);});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];onDown(t.clientX,t.clientY);},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];onMove(t.clientX,t.clientY);},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();onUp();},{passive:false});
+
+function deformFlan(geo,origPos,t,s){
+  const pos=geo.attributes.position;
+  const w=s.wobble,wdx=s.wDir.x,wdz=s.wDir.y,decay=Math.exp(-s.wobbleDecay*2.5);
+  const sx=s.scaleX,sy=s.scaleY,sz=s.scaleZ,stAmt=s.stretchAmt,stDx=s.stretchDir.x,stDz=s.stretchDir.y;
+  for(let i=0;i<pos.count;i++){
+    const ox=origPos[i*3],oy=origPos[i*3+1],oz=origPos[i*3+2];
+    const len=Math.sqrt(ox*ox+oy*oy+oz*oz)||1;
+    const nx=ox/len,ny=oy/len,nz=oz/len,proj=nx*wdx+nz*wdz;
+    const wave=Math.sin(t*5-proj*3)*w*decay*0.025;
+    const wave2=Math.sin(t*9-proj*5)*w*decay*0.008;
+    const stretchProj=nx*stDx+nz*stDz;
+    const stretchPush=stretchProj*stAmt;
+    pos.array[i*3]=ox*sx+nx*(wave+wave2)+stDx*stretchPush*0.7;
+    pos.array[i*3+1]=oy*sy+ny*(wave*0.35)-Math.abs(stretchPush)*0.25;
+    pos.array[i*3+2]=oz*sz+nz*(wave+wave2)+stDz*stretchPush*0.7;
+  }
+  pos.needsUpdate=true; geo.computeVertexNormals();
+}
+
+function resolveCollision(){
+  const p0=state[0].pos,p1=state[1].pos;
+  const dx=p1.x-p0.x,dz=p1.z-p0.z,dist=Math.sqrt(dx*dx+dz*dz),minDist=radius*2.02;
+  if(dist<minDist&&dist>0.001){
+    const nx=dx/dist,nz=dz/dist,ov=(minDist-dist)*0.5;
+    p0.x-=nx*ov;p0.z-=nz*ov;p1.x+=nx*ov;p1.z+=nz*ov;
+    const rv=(state[0].vel.x-state[1].vel.x)*nx+(state[0].vel.z-state[1].vel.z)*nz;
+    if(rv>0){const imp=rv*0.5;state[0].vel.x-=imp*nx;state[0].vel.z-=imp*nz;state[1].vel.x+=imp*nx;state[1].vel.z+=imp*nz;pokeFlan(0,Math.abs(rv)*0.25);pokeFlan(1,Math.abs(rv)*0.25);}
+  }
+}
+
+// === THAY ĐỔI: damping cao hơn → tắt nhanh hơn, nảy ít hơn ===
+const SPRING_K=5.5, DAMPING=0.88, WOBBLE_SPRING=14, SCALE_DAMP=0.82;
+const clock=new THREE.Clock(); let time=0;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.04); time+=dt;
+  for(let i=0;i<2;i++){
+    const s=state[i],base=basePos[i];
+    s.vel.x+=(base.x-s.pos.x)*SPRING_K*dt; s.vel.z+=(base.z-s.pos.z)*SPRING_K*dt;
+    s.vel.x*=DAMPING; s.vel.z*=DAMPING;
+    s.pos.x+=s.vel.x*dt*60; s.pos.z+=s.vel.z*dt*60;
+    const offX=s.pos.x-base.x,offZ=s.pos.z-base.z,dist=Math.sqrt(offX*offX+offZ*offZ);
+    if(dist>MAX_DRIFT){const sc=MAX_DRIFT/dist;s.pos.x=base.x+offX*sc;s.pos.z=base.z+offZ*sc;const nx=offX/dist,nz=offZ/dist,vOut=s.vel.x*nx+s.vel.z*nz;if(vOut>0){s.vel.x-=vOut*nx;s.vel.z-=vOut*nz;}}
+    groups[i].position.set(s.pos.x,0,s.pos.z);
+    if(s.wobble<0.03){s.wobble=0.03;s.wDir.set(Math.sin(time*0.5+i*2.1),Math.cos(time*0.4+i*1.7)).normalize();}
+    s.wobbleDecay+=dt*1.8; s.wobble=Math.max(0.03,s.wobble-dt*0.55);
+    if(s.wobble>0.4)s.wobbleDecay=Math.min(s.wobbleDecay,0.2);
+    s.scaleVelX+=(1-s.scaleX)*WOBBLE_SPRING*dt; s.scaleVelY+=(1-s.scaleY)*WOBBLE_SPRING*dt; s.scaleVelZ+=(1-s.scaleZ)*WOBBLE_SPRING*dt;
+    s.scaleVelX*=SCALE_DAMP; s.scaleVelY*=SCALE_DAMP; s.scaleVelZ*=SCALE_DAMP;
+    s.scaleX+=s.scaleVelX*dt*8; s.scaleY+=s.scaleVelY*dt*8; s.scaleZ+=s.scaleVelZ*dt*8;
+    s.scaleX=Math.max(0.88,Math.min(1.12,s.scaleX)); s.scaleY=Math.max(0.88,Math.min(1.16,s.scaleY)); s.scaleZ=Math.max(0.88,Math.min(1.12,s.scaleZ));
+    s.stretchVel+=(0-s.stretchAmt)*18*dt; s.stretchVel*=0.72;
+    s.stretchAmt+=s.stretchVel*dt*8; s.stretchAmt=Math.max(0,Math.min(0.32,s.stretchAmt));
+    deformFlan(geos[i],origs[i],time,s);
+  }
+  resolveCollision();
+  renderer.render(scene,camera);
+}
+animate();
+window.addEventListener('resize',()=>{const nw=canvas.parentElement.offsetWidth||680,nh=Math.min(nw*0.8,540);renderer.setSize(nw,nh);camera.aspect=nw/nh;camera.updateProjectionMatrix();});
+</script>
